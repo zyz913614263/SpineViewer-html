@@ -39,7 +39,11 @@ main {
   min-width: 0;
   position: relative;
 }
-#player, .spine-player, .spine-player-canvas { width: 100%; height: 100%; }
+#player { position: relative; width: 100%; height: 100%; }
+.spine-player { position: absolute; inset: 0; width: 100%; height: 100%; }
+.spine-player-canvas { display: block; width: 100%; height: 100%; }
+.spine-player-controls { display: none !important; }
+.spine-player-error.spine-player-hidden { display: none; }
 #empty {
   position: absolute;
   inset: 0;
@@ -51,7 +55,7 @@ main {
   color: #444;
   pointer-events: none;
 }
-#empty[hidden] { display: none; }
+#empty[hidden], #skeletons-section[hidden] { display: none; }
 aside {
   width: 280px;
   overflow: auto;

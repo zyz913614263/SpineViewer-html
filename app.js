@@ -1,9 +1,17 @@
 const RUNTIMES = {
+  "3.3": "vendor/spine-player-3.7.js",
+  "3.4": "vendor/spine-player-3.7.js",
+  "3.5": "vendor/spine-player-3.7.js",
+  "3.6": "vendor/spine-player-3.7.js",
+  "3.7": "vendor/spine-player-3.7.js",
+  "3.8": "vendor/spine-player-3.8.js",
   "4.0": "vendor/spine-player-4.0.js",
   "4.1": "vendor/spine-player-4.1.js",
   "4.2": "vendor/spine-player-4.2.js",
   "4.3": "vendor/spine-player-4.3.js",
 };
+
+const LEGACY_37 = new Set(["3.3", "3.4", "3.5", "3.6", "3.7"]);
 
 const BACKGROUNDS = {
   checker: "#00000000",
@@ -40,11 +48,14 @@ const els = {
 
 let player = null;
 let runtimeKey = "";
+let loadedSrc = "";
 let hiddenSlots = new Set();
 let enabledSkins = [];
 let syncing = false;
 let exporting = false;
 let baseName = "spine";
+let assetSets = [];
+let loadGeneration = 0;
 
 document.querySelector("#open-files").onclick = () => document.querySelector("#file-input").click();
 document.querySelector("#open-folder").onclick = () => document.querySelector("#folder-input").click();
@@ -158,55 +169,119 @@ async function loadSample() {
 async function loadFileList(fileList) {
   const files = [...fileList];
   if (!files.length) return;
-  const atlasFile = files.find((file) => /\.atlas(\.txt)?$/i.test(file.name));
-  const jsonFiles = files.filter((file) => /\.json$/i.test(file.name));
-  const skelFile = files.find((file) => /\.skel$/i.test(file.name));
-  if (!atlasFile || (!jsonFiles.length && !skelFile)) {
-    setStatus("需要同时选择骨骼 JSON（或 skel）和 atlas，以及贴图。");
+  const sets = buildSets(files);
+  if (!sets.length) {
+    setStatus("需要同名的 JSON（或 skel）、atlas 和贴图，例如 hero.json、hero.atlas、hero.png。");
     return;
   }
-  const atlasStem = atlasFile.name.replace(/\.atlas(\.txt)?$/i, "");
-  const jsonFile = jsonFiles.find((file) => file.name.replace(/\.json$/i, "") === atlasStem) || jsonFiles[0];
-  const skeletonFile = jsonFile || skelFile;
-  const atlasText = await skeletonFileText(atlasFile);
+  assetSets = sets;
+  renderSets(sets);
+  await openSet(sets[0]);
+}
+
+function buildSets(files) {
+  const sets = new Map();
+  const images = [];
+  for (const file of files) {
+    const path = filePath(file);
+    const name = path.split("/").pop();
+    const dir = directoryOf(path);
+    const atlas = name.match(/^(.*)\.atlas(?:\.txt)?$/i);
+    const json = name.match(/^(.*)\.json$/i);
+    const skel = name.match(/^(.*)\.skel$/i);
+    if (/\.(png|jpe?g|webp)$/i.test(name)) images.push(file);
+    if (!atlas && !json && !skel) continue;
+    const stem = (atlas || json || skel)[1];
+    const key = `${dir}\0${stem}`.toLowerCase();
+    const set = sets.get(key) || { key, dir, stem, label: dir ? `${dir}/${stem}` : stem, atlas: null, json: null, skel: null };
+    if (atlas) set.atlas = file;
+    if (json) set.json = file;
+    if (skel) set.skel = file;
+    sets.set(key, set);
+  }
+  return [...sets.values()]
+    .filter((set) => set.atlas && (set.json || set.skel))
+    .sort((a, b) => a.label.localeCompare(b.label, "zh"))
+    .map((set) => ({ ...set, images }));
+}
+
+function renderSets(sets) {
+  const section = document.querySelector("#skeletons-section");
+  const list = document.querySelector("#skeletons");
+  if (sets.length < 2) {
+    section.hidden = true;
+    list.replaceChildren();
+    return;
+  }
+  section.hidden = false;
+  list.replaceChildren();
+  for (const set of sets) {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.dataset.key = set.key;
+    button.textContent = set.label;
+    button.onclick = () => openSet(set);
+    list.appendChild(button);
+  }
+}
+
+function markSet(key) {
+  for (const button of document.querySelectorAll("#skeletons button")) {
+    button.classList.toggle("selected", button.dataset.key === key);
+  }
+}
+
+async function openSet(set) {
+  const generation = ++loadGeneration;
+  markSet(set.key);
+  const atlasText = await set.atlas.text();
+  if (generation !== loadGeneration) return;
   const pages = atlasPageNames(atlasText);
   const pageData = {};
   for (const page of pages) {
-    const image = findFile(files, page);
+    const image = findPage(set.images, page, set.dir);
     if (!image) {
       setStatus(`找不到贴图 ${page}`);
       return;
     }
     pageData[page] = await dataUri(image);
+    if (generation !== loadGeneration) return;
   }
-  baseName = skeletonFile.name.replace(/\.(json|skel)$/i, "");
-  if (jsonFile) {
-    const jsonText = await skeletonFileText(jsonFile);
+  baseName = set.stem;
+  if (set.json) {
+    const jsonText = await set.json.text();
+    if (generation !== loadGeneration) return;
     let version = "";
     try {
       version = JSON.parse(jsonText).skeleton?.spine || "";
-    } catch (error) {
+    } catch (_error) {
       setStatus("骨骼 JSON 无法解析。");
       return;
     }
     await openAssets({ version, binary: false, jsonText, atlasText, pages: pageData });
   } else {
-    const bytes = new Uint8Array(await skelFile.arrayBuffer());
-    const version = sniffBinaryVersion(bytes) || "";
+    const bytes = new Uint8Array(await set.skel.arrayBuffer());
+    if (generation !== loadGeneration) return;
     await openAssets({
-      version,
+      version: sniffBinaryVersion(bytes) || "",
       binary: true,
-      binaryUri: await dataUri(skelFile),
+      binaryUri: await dataUri(set.skel),
       atlasText,
       pages: pageData,
     });
   }
+  if (generation === loadGeneration) markSet(set.key);
 }
 
 async function openAssets(asset) {
   const key = runtimeFor(asset.version);
   if (!key) {
-    setStatus(`网页播放器支持 Spine 4.0–4.3，当前版本是 ${asset.version || "未知"}。`);
+    setStatus(`网页播放器支持 Spine 3.3–3.8 与 4.0–4.3，当前版本是 ${asset.version || "未知"}。`);
+    return;
+  }
+  const binary = Boolean(asset.binary);
+  if (binary && LEGACY_37.has(key)) {
+    setStatus("3.7 及更早的网页播放器只能打开 JSON，请导出 JSON 后再打开。");
     return;
   }
   setStatus("正在加载…");
@@ -214,17 +289,17 @@ async function openAssets(asset) {
   enabledSkins = [];
   try {
     await ensureRuntime(key);
-    if (player) {
-      player.dispose();
-      player = null;
-    }
+    stopPlayer(player);
+    player = null;
+    els.player.replaceChildren();
+    const jsonText = asset.jsonText && LEGACY_37.has(key) ? adaptLegacyJson(asset.jsonText) : asset.jsonText;
     const raw = { "skeleton.atlas": textDataUri(asset.atlasText, "text/plain") };
     for (const [name, uri] of Object.entries(asset.pages)) raw[name] = uri;
-    const binary = Boolean(asset.binary);
     if (binary) raw["skeleton.skel"] = asset.binaryUri;
-    else raw["skeleton.json"] = textDataUri(asset.jsonText, "application/json");
+    else raw["skeleton.json"] = textDataUri(jsonText, "application/json");
+    window.__spineRaw = raw;
     const pma = /^\s*pma:\s*true\s*$/im.test(asset.atlasText);
-    player = new spine.SpinePlayer(els.player, {
+    const config = {
       jsonUrl: binary ? undefined : "skeleton.json",
       binaryUrl: binary ? "skeleton.skel" : undefined,
       skeleton: binary ? "skeleton.skel" : "skeleton.json",
@@ -254,12 +329,13 @@ async function openAssets(asset) {
       },
       success: (view) => {
         player = view;
+        hookSlotHiding(view);
         els.empty.hidden = true;
         buildLists();
         applySpeed();
         const animations = view.skeleton.data.animations;
         if (animations.length) {
-          view.setAnimation(animations[0].name, els.loop.checked);
+          playNamed(animations[0].name);
           view.play();
           els.play.textContent = "暂停";
         } else {
@@ -269,14 +345,18 @@ async function openAssets(asset) {
         setBusy(false);
         const version = view.skeleton.data.version || asset.version;
         els.info.textContent = `Spine ${version} · 骨骼 ${view.skeleton.data.bones.length} · 插槽 ${view.skeleton.slots.length} · 动画 ${animations.length}`;
-        setStatus(key === runtimeFor(asset.version) ? `已打开 ${baseName}` : `已用 ${key} 运行时打开 ${baseName}`);
+        setStatus(`已打开 ${baseName}`);
         markAnimation(animations[0] && animations[0].name);
       },
       error: (_view, message) => {
-        setStatus(message);
-        els.info.textContent = message;
+        const text = message && message.message ? message.message : String(message);
+        setStatus(text);
+        els.info.textContent = text;
       },
-    });
+    };
+    if (key === "3.8" && binary) config.skelUrl = "skeleton.skel";
+    player = new spine.SpinePlayer(els.player, config);
+    guardDraw(player);
   } catch (error) {
     setStatus(error.message || String(error));
   }
@@ -292,20 +372,197 @@ function runtimeFor(version) {
 }
 
 function ensureRuntime(key) {
-  if (runtimeKey === key && window.spine && window.spine.SpinePlayer) return Promise.resolve();
+  const src = RUNTIMES[key];
+  if (loadedSrc === src && window.spine && window.spine.SpinePlayer) {
+    runtimeKey = key;
+    return Promise.resolve();
+  }
   return new Promise((resolve, reject) => {
     const previous = document.querySelector("#spine-runtime");
     if (previous) previous.remove();
+    window.spine = {};
     const script = document.createElement("script");
     script.id = "spine-runtime";
-    script.src = RUNTIMES[key];
+    script.src = src;
     script.onload = () => {
+      loadedSrc = src;
       runtimeKey = key;
+      if (src.includes("spine-player-3.")) installRawLoader();
       resolve();
     };
     script.onerror = () => reject(new Error("播放器运行时加载失败"));
     document.head.appendChild(script);
   });
+}
+
+function stopPlayer(current) {
+  if (!current) return;
+  current._stopped = true;
+  if (typeof current.stopRendering === "function") current.stopRendering();
+  if (typeof current.dispose === "function") {
+    try {
+      current.dispose();
+    } catch (_error) {
+      /* 旧播放器卸下时画布可能已经不在页面上。 */
+    }
+  }
+  if (current.dom && current.dom.parentNode) current.dom.remove();
+}
+
+function guardDraw(current) {
+  if (!current || typeof current.drawFrame !== "function" || current._guarded) return;
+  const draw = current.drawFrame.bind(current);
+  current.drawFrame = function drawGuarded(...args) {
+    if (current._stopped) return;
+    return draw(...args);
+  };
+  current._guarded = true;
+}
+
+function playNamed(name) {
+  if (player.setAnimation.length >= 2) player.setAnimation(name, els.loop.checked);
+  else player.setAnimation(name);
+  const entry = currentEntry();
+  if (entry) entry.loop = els.loop.checked;
+}
+
+function hookSlotHiding(view) {
+  const state = view.animationState;
+  if (!state || state._hideWrapped) return;
+  const apply = state.apply.bind(state);
+  state.apply = function hideOnApply(...args) {
+    const result = apply(...args);
+    hideSlots(view);
+    return result;
+  };
+  state._hideWrapped = true;
+}
+
+function adaptLegacyJson(text) {
+  let root;
+  try {
+    root = JSON.parse(text);
+  } catch (_error) {
+    return text;
+  }
+  if (root.animations) {
+    for (const animation of Object.values(root.animations)) {
+      if (animation && animation.ffd && !animation.deform) {
+        animation.deform = animation.ffd;
+        delete animation.ffd;
+      }
+    }
+  }
+  if (Array.isArray(root.bones)) {
+    for (const bone of root.bones) {
+      if (bone.flipX) {
+        bone.scaleX = -(bone.scaleX == null ? 1 : bone.scaleX);
+        delete bone.flipX;
+      }
+      if (bone.flipY) {
+        bone.scaleY = -(bone.scaleY == null ? 1 : bone.scaleY);
+        delete bone.flipY;
+      }
+      if (bone.transform == null && (bone.inheritRotation != null || bone.inheritScale != null)) {
+        const rotation = bone.inheritRotation !== false;
+        const scale = bone.inheritScale !== false;
+        if (rotation && scale) bone.transform = "normal";
+        else if (rotation) bone.transform = "noScale";
+        else if (scale) bone.transform = "noRotationOrReflection";
+        else bone.transform = "onlyTranslation";
+        delete bone.inheritRotation;
+        delete bone.inheritScale;
+      }
+    }
+  }
+  return JSON.stringify(root);
+}
+
+function installRawLoader() {
+  const manager = spine.AssetManager;
+  if (!manager || manager.__spineRaw) return;
+  manager.__spineRaw = true;
+  const originalText = manager.downloadText;
+  const originalBinary = manager.downloadBinary;
+  const originalProtoText = manager.prototype.downloadText;
+  const originalProtoBinary = manager.prototype.downloadBinary;
+  const originalLoad = manager.prototype.loadTexture;
+  if (typeof originalText === "function") {
+    manager.downloadText = function downloadRawText(url, success, error) {
+      const raw = lookupRaw(url);
+      if (raw) {
+        success(decodeRawText(raw));
+        return;
+      }
+      return originalText(url, success, error);
+    };
+  }
+  if (typeof originalBinary === "function") {
+    manager.downloadBinary = function downloadRawBinary(url, success, error) {
+      const raw = lookupRaw(url);
+      if (raw && String(raw).startsWith("data:")) {
+        success(decodeRawBytes(raw));
+        return;
+      }
+      return originalBinary(url, success, error);
+    };
+  }
+  if (typeof originalProtoText === "function") {
+    manager.prototype.downloadText = function downloadRawText(url, success, error) {
+      const raw = (this.rawDataUris && this.rawDataUris[url]) || lookupRaw(url);
+      if (raw && String(raw).startsWith("data:")) {
+        success(decodeRawText(raw));
+        return;
+      }
+      return originalProtoText.call(this, url, success, error);
+    };
+  }
+  if (typeof originalProtoBinary === "function") {
+    manager.prototype.downloadBinary = function downloadRawBinary(url, success, error) {
+      const raw = (this.rawDataUris && this.rawDataUris[url]) || lookupRaw(url);
+      if (raw && String(raw).startsWith("data:")) {
+        success(decodeRawBytes(raw));
+        return;
+      }
+      return originalProtoBinary.call(this, url, success, error);
+    };
+  }
+  if (typeof originalLoad === "function") {
+    manager.prototype.loadTexture = function loadRawTexture(path, success, error) {
+      const raw = lookupRaw(String(path).replace(/^\//, ""));
+      if (raw && typeof this.loadTextureData === "function" && !(this.rawDataUris && this.rawDataUris[path])) {
+        this.loadTextureData(path, raw, success, error);
+        return;
+      }
+      return originalLoad.call(this, path, success, error);
+    };
+  }
+}
+
+function lookupRaw(url) {
+  const raw = window.__spineRaw || {};
+  if (raw[url]) return raw[url];
+  const bare = String(url || "").replace(/^\//, "");
+  if (raw[bare]) return raw[bare];
+  return raw[bare.split("/").pop()] || null;
+}
+
+function decodeRawText(value) {
+  const uri = String(value);
+  if (!uri.startsWith("data:")) return uri;
+  const comma = uri.indexOf(",");
+  const meta = uri.slice(0, comma);
+  const payload = uri.slice(comma + 1);
+  if (!/;base64/i.test(meta)) return decodeURIComponent(payload);
+  return new TextDecoder().decode(decodeRawBytes(uri));
+}
+
+function decodeRawBytes(uri) {
+  const comma = uri.indexOf(",");
+  const binary = atob(uri.slice(comma + 1));
+  const bytes = new Uint8Array(binary.length);
+  for (let index = 0; index < binary.length; index++) bytes[index] = binary.charCodeAt(index);
+  return bytes;
 }
 
 function buildLists() {
@@ -319,7 +576,7 @@ function buildLists() {
     button.type = "button";
     button.textContent = `${animation.name}    ${animation.duration.toFixed(2)}s`;
     button.onclick = () => {
-      player.setAnimation(animation.name, els.loop.checked);
+      playNamed(animation.name);
       applySpeed();
       if (els.play.textContent === "暂停") player.play();
       else player.pause();
@@ -380,8 +637,8 @@ function applySkins() {
     if (fallback) skeleton.setSkin(fallback);
   } else {
     const combined = new Skin("combined");
-    if (data.defaultSkin) combined.addSkin(data.defaultSkin);
-    for (const skin of selected) combined.addSkin(skin);
+    if (data.defaultSkin) copySkin(combined, data.defaultSkin);
+    for (const skin of selected) copySkin(combined, skin);
     skeleton.setSkin(combined);
   }
   if (skeleton.setSlotsToSetupPose) skeleton.setSlotsToSetupPose();
@@ -392,6 +649,19 @@ function applySkins() {
     if (player.setViewport) player.setViewport(entry.animation);
   }
   updateWorld(skeleton);
+}
+
+function copySkin(target, source) {
+  if (typeof target.addSkin === "function") {
+    target.addSkin(source);
+    return;
+  }
+  const maps = source.attachments || [];
+  for (let slotIndex = 0; slotIndex < maps.length; slotIndex++) {
+    const map = maps[slotIndex];
+    if (!map) continue;
+    for (const name of Object.keys(map)) target.addAttachment(slotIndex, name, map[name]);
+  }
 }
 
 function hideSlots(view) {
@@ -506,7 +776,9 @@ function applyBackground() {
   else if (mode === "black") stage.style.backgroundColor = "#000";
   else if (mode === "gray") stage.style.backgroundColor = "#737373";
   else stage.style.backgroundColor = "";
-  if (player && player.bg) player.bg.setFromString(BACKGROUNDS[mode]);
+  const hex = BACKGROUNDS[mode];
+  if (player && player.bg && player.bg.setFromString) player.bg.setFromString(hex);
+  if (player && player.config) player.config.backgroundColor = hex;
 }
 
 function exportPng() {
@@ -598,13 +870,23 @@ function atlasPageNames(text) {
   return pages;
 }
 
-function findFile(files, page) {
-  const base = page.split("/").pop();
-  return files.find((file) => file.name === base || file.webkitRelativePath.endsWith(page) || file.name === page);
+function filePath(file) {
+  return file.webkitRelativePath || file._relativePath || file.name;
 }
 
-function skeletonFileText(file) {
-  return file.text();
+function directoryOf(path) {
+  const index = path.lastIndexOf("/");
+  return index >= 0 ? path.slice(0, index) : "";
+}
+
+function findPage(files, page, dir) {
+  const base = page.split("/").pop();
+  const inDir = files.filter((file) => directoryOf(filePath(file)).toLowerCase() === dir.toLowerCase());
+  const named = (file) => {
+    const path = filePath(file);
+    return file.name === base || path === page || path.endsWith(`/${page}`);
+  };
+  return inDir.find(named) || files.find(named);
 }
 
 function dataUri(file) {
@@ -658,9 +940,18 @@ async function filesFromDrop(dataTransfer) {
   return files;
 }
 
+function watchClock() {
+  if (player && !exporting) refreshClock();
+  requestAnimationFrame(watchClock);
+}
+watchClock();
+
 async function walkEntry(entry, files) {
   if (entry.isFile) {
-    files.push(await new Promise((resolve, reject) => entry.file(resolve, reject)));
+    const file = await new Promise((resolve, reject) => entry.file(resolve, reject));
+    const relative = String(entry.fullPath || file.name).replace(/^\/+/, "");
+    if (relative && relative !== file.name) file._relativePath = relative;
+    files.push(file);
     return;
   }
   if (!entry.isDirectory) return;

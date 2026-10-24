@@ -21,9 +21,13 @@
   <div class="layout">
     <main id="stage" class="checker">
       <div id="player"></div>
-      <p id="empty">把 Spine JSON、atlas 和贴图拖到这里，或点「打开文件」。<br>也可以先看「示例」。</p>
+      <p id="empty">把同名的 JSON（或 skel）、atlas 和贴图拖到这里，或点「打开文件夹」。<br>也可以先看「示例」。</p>
     </main>
     <aside>
+      <section id="skeletons-section" hidden>
+        <h2>骨骼</h2>
+        <div id="skeletons" class="list"></div>
+      </section>
       <section>
         <h2>动画</h2>
         <div id="animations" class="list"></div>
@@ -58,7 +62,7 @@
           <button id="export-gif" type="button" disabled>导出 GIF</button>
         </div>
       </section>
-      <p id="info">尚未打开文件。支持 Spine 4.0–4.3 的 JSON。</p>
+      <p id="info">尚未打开文件。支持 Spine 3.3–3.8 与 4.0–4.3 的 JSON。</p>
     </aside>
   </div>
   <footer id="status">把骨骼文件拖进窗口即可预览。</footer>
